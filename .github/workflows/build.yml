@@ -1,4 +1,4 @@
-name: Build Seraph Clone desktop app
+name: Build NR Secure desktop app
 
 # Builds real native binaries on GitHub-hosted Windows and macOS runners.
 #
@@ -28,16 +28,16 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Build with PyInstaller
-        run: pyinstaller --noconfirm seraph.spec
+        run: pyinstaller --noconfirm nrsecure.spec
 
       - name: Rename output
         run: |
-          copy dist\SeraphClone.exe dist\SeraphClone-Windows.exe
+          copy dist\NRSecure.exe dist\NRSecure-Windows.exe
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SeraphClone-Windows
-          path: dist/SeraphClone-Windows.exe
+          name: NRSecure-Windows
+          path: dist/NRSecure-Windows.exe
 
   build-macos:
     runs-on: macos-latest
@@ -55,7 +55,7 @@ jobs:
         run: iconutil -c icns assets/Icon.iconset -o assets/icon.icns
 
       - name: Build with PyInstaller
-        run: pyinstaller --noconfirm seraph.spec
+        run: pyinstaller --noconfirm nrsecure.spec
 
       - name: Ad-hoc re-sign the app bundle
         # PyInstaller applies its own ad-hoc signature, but copying the .app
@@ -64,24 +64,24 @@ jobs:
         # (the process gets killed instantly, no error dialog). Re-signing
         # here, right before packaging, guarantees a valid signature ships.
         run: |
-          codesign --force --deep --sign - dist/SeraphClone.app
-          codesign --verify --deep --strict --verbose=2 dist/SeraphClone.app
+          codesign --force --deep --sign - dist/NRSecure.app
+          codesign --verify --deep --strict --verbose=2 dist/NRSecure.app
 
       - name: Package as .dmg (hdiutil is built into macOS)
         run: |
           mkdir dmg-staging
-          ditto dist/SeraphClone.app dmg-staging/SeraphClone.app
-          codesign --verify --deep --strict --verbose=2 dmg-staging/SeraphClone.app
+          ditto dist/NRSecure.app dmg-staging/NRSecure.app
+          codesign --verify --deep --strict --verbose=2 dmg-staging/NRSecure.app
           ln -s /Applications dmg-staging/Applications
-          hdiutil create -volname "Seraph Clone" \
+          hdiutil create -volname "NR Secure" \
             -srcfolder dmg-staging \
             -ov -format UDZO \
-            dist/SeraphClone-macOS.dmg
+            dist/NRSecure-macOS.dmg
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SeraphClone-macOS
-          path: dist/SeraphClone-macOS.dmg
+          name: NRSecure-macOS
+          path: dist/NRSecure-macOS.dmg
 
   release:
     # Only runs when a version tag (e.g. v0.1.0) is pushed - attaches both
@@ -99,5 +99,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/SeraphClone-Windows/SeraphClone-Windows.exe
-            artifacts/SeraphClone-macOS/SeraphClone-macOS.dmg
+            artifacts/NRSecure-Windows/NRSecure-Windows.exe
+            artifacts/NRSecure-macOS/NRSecure-macOS.dmg

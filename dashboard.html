@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Seraph Clone - Live Dashboard</title>
+<title>NR Secure - Live Dashboard</title>
 <style>
   :root {
     --bg: #0b0f14;
@@ -50,10 +50,22 @@
   button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .empty { color: var(--muted); font-size: 13px; padding: 20px 0; text-align: center; }
+  button.kill {
+    width: auto; padding: 5px 10px; font-size: 11px; background: var(--danger); margin: 0;
+  }
+  button.kill:disabled { background: var(--border); cursor: default; }
+  button.kill-all {
+    background: var(--danger); margin-bottom: 12px;
+  }
+  .event-log-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .event-log-header .label { margin-bottom: 0; }
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
+  .toggle-row input[type="checkbox"] { width: auto; margin: 0; }
+  .toggle-note { color: var(--muted); font-size: 11px; margin-top: 6px; }
 </style>
 </head>
 <body>
-  <h1>Seraph Clone</h1>
+  <h1>NR Secure</h1>
   <div class="sub">Live scam-protection dashboard — auto-refreshes every 5s</div>
 
   <div class="grid">
@@ -74,13 +86,25 @@
           <button class="secondary" onclick="testGuardian()">Send test alert</button>
         </div>
       </div>
+
+      <div class="card" style="margin-top:16px;">
+        <div class="label">App settings</div>
+        <div class="toggle-row">
+          <label for="autostartToggle">Start at Login</label>
+          <input type="checkbox" id="autostartToggle" onchange="toggleAutostart(this)">
+        </div>
+        <div id="autostartNote" class="toggle-note"></div>
+      </div>
     </div>
 
     <div class="card">
-      <div class="label">Event log</div>
+      <div class="event-log-header">
+        <div class="label">Event log</div>
+        <button class="kill-all" style="width:auto;" onclick="killAll(this)">Kill All Detected</button>
+      </div>
       <table>
         <thead>
-          <tr><th>Time</th><th>Type</th><th>Source</th><th>Detail</th></tr>
+          <tr><th>Time</th><th>Type</th><th>Source</th><th>Detail</th><th></th></tr>
         </thead>
         <tbody id="eventBody"></tbody>
       </table>
@@ -114,7 +138,11 @@ async function refresh() {
     document.getElementById("emptyState").style.display = data.events.length ? "none" : "block";
     for (const e of data.events) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${e.time_str}</td><td><span class="badge ${e.type}">${e.type.replaceAll('_',' ')}</span></td><td>${e.source}</td><td>${e.detail || ''}</td>`;
+      const canKill = e.pid && (e.type === "remote_access_tool_detected" || e.type === "remote_access_tool_new_connection");
+      const actionCell = canKill
+        ? `<button class="kill" onclick="killProcess(${e.pid}, this)">Kill process</button>`
+        : "";
+      tr.innerHTML = `<td>${e.time_str}</td><td><span class="badge ${e.type}">${e.type.replaceAll('_',' ')}</span></td><td>${e.source}</td><td>${e.detail || ''}</td><td>${actionCell}</td>`;
       body.appendChild(tr);
     }
   } catch (err) {
@@ -149,7 +177,76 @@ async function testGuardian() {
   alert(data.sent ? "Test alert sent (check guardian_alerts.log if no email/webhook configured)." : "Failed to send.");
 }
 
+async function killProcess(pid, btn) {
+  if (!confirm(`Terminate process ${pid}? This will close that program immediately.`)) return;
+  btn.disabled = true;
+  btn.textContent = "Killing...";
+  try {
+    const res = await fetch(`${API}/processes/kill`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pid }),
+    });
+    const data = await res.json();
+    alert(data.message);
+  } catch (err) {
+    alert("Could not reach server to kill the process.");
+  }
+  refresh();
+}
+
+async function killAll(btn) {
+  if (!confirm("Terminate every currently running flagged remote-access tool (AnyDesk, TeamViewer, etc.)?")) return;
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "Killing all...";
+  try {
+    const res = await fetch(`${API}/processes/kill_all`, { method: "POST" });
+    const data = await res.json();
+    alert(data.message);
+  } catch (err) {
+    alert("Could not reach server to kill processes.");
+  }
+  btn.disabled = false;
+  btn.textContent = originalText;
+  refresh();
+}
+
+async function loadAutostart() {
+  try {
+    const res = await fetch(`${API}/settings/autostart`);
+    const data = await res.json();
+    const toggle = document.getElementById("autostartToggle");
+    const note = document.getElementById("autostartNote");
+    toggle.checked = data.enabled;
+    if (!data.supported) {
+      toggle.disabled = true;
+      note.textContent = "Only available in the installed app, not when running from source.";
+    } else {
+      note.textContent = "";
+    }
+  } catch (err) {
+    console.error("Failed to load autostart setting", err);
+  }
+}
+
+async function toggleAutostart(checkbox) {
+  checkbox.disabled = true;
+  try {
+    await fetch(`${API}/settings/autostart`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: checkbox.checked }),
+    });
+  } catch (err) {
+    alert("Could not reach server to update this setting.");
+  }
+  checkbox.disabled = false;
+  loadAutostart();
+}
+
 loadGuardianConfig();
+loadAutostart();
 refresh();
 setInterval(refresh, 5000);
 </script>

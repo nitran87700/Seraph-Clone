@@ -1,17 +1,25 @@
 """
-Seraph Clone - Unified Desktop App
+NR Secure - Unified Desktop App
 ===================================
 Packaged entry point that combines:
-  - the risk/event server + dashboard (from server/app.py)
-  - the remote-access-tool monitor (from desktop-agent/monitor.py)
-  - a system tray icon so it runs quietly in the background
+  - the risk/event server + dashboard
+  - the remote-access-tool monitor
+  - a native app window showing the dashboard (not a browser tab)
+  - auto-start registration (runs at login once installed, no manual launch needed)
 
 into a single process, so it can be frozen into one Windows .exe / macOS .app
-with PyInstaller. The browser extension is unaffected and still installs
-separately into Chrome (extensions can't be bundled into a native binary).
+with PyInstaller. The browser extension (if used) is unaffected and still
+installs separately into Chrome (extensions can't be bundled into a native
+binary).
+
+The dashboard is shown via pywebview, which embeds the OS's native web
+renderer (WebView2 on Windows, WKWebView on macOS) in a real window - no
+separate system tray icon, since a tray icon (pystray) and a native window
+(pywebview) both need exclusive control of the main thread on macOS and
+can't reliably coexist in one process. Closing the window quits the app.
 
 Runtime data (events, guardian config/log) is written to a per-user folder
-(~/.seraph-clone) rather than next to the executable, since the executable's
+(~/.nrsecure) rather than next to the executable, since the executable's
 own folder is read-only once frozen/signed.
 """
 import json
@@ -28,6 +36,7 @@ import psutil
 import requests
 
 import guardian
+import autostart
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +51,7 @@ def resource_path(relative_path):
 
 def data_dir():
     """Writable per-user location for runtime data."""
-    base = os.path.join(os.path.expanduser("~"), ".seraph-clone")
+    base = os.path.join(os.path.expanduser("~"), ".nrsecure")
     os.makedirs(base, exist_ok=True)
     return base
 
@@ -56,7 +65,7 @@ guardian.LOG_FILE = os.path.join(data_dir(), "guardian_alerts.log")
 
 
 # ---------------------------------------------------------------------------
-# Risk engine (same model as server/app.py)
+# Risk engine
 # ---------------------------------------------------------------------------
 EVENT_WEIGHTS = {
     "scam_site_blocked": 35,
@@ -96,7 +105,7 @@ def _current_risk_score(events):
     return round(min(score, 100), 1)
 
 
-def record_event(event_type, source, detail, severity="medium"):
+def record_event(event_type, source, detail, severity="medium", pid=None):
     """Shared path used both by the /events HTTP route (browser extension)
     and the in-process remote-access monitor thread (no HTTP round trip
     needed since they now live in the same process)."""
@@ -108,6 +117,7 @@ def record_event(event_type, source, detail, severity="medium"):
         "source": source,
         "detail": detail,
         "severity": severity,
+        "pid": pid,  # present for remote_access_tool_* events; lets the dashboard offer Kill/Kill All
         "timestamp": time.time(),
         "time_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -149,6 +159,7 @@ def http_receive_event():
             source=payload.get("source", "unknown"),
             detail=payload.get("detail", ""),
             severity=payload.get("severity", "medium"),
+            pid=payload.get("pid"),
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -183,13 +194,107 @@ def guardian_test():
     return jsonify({"sent": sent})
 
 
+@app.route("/settings/autostart", methods=["GET"])
+def autostart_get():
+    return jsonify({
+        "enabled": autostart.is_autostart_enabled(),
+        "supported": autostart.is_frozen(),
+    })
+
+
+@app.route("/settings/autostart", methods=["POST"])
+def autostart_set():
+    payload = request.get_json(force=True, silent=True) or {}
+    want_enabled = bool(payload.get("enabled"))
+    if want_enabled:
+        ok = autostart.enable_autostart()
+    else:
+        autostart.disable_autostart()
+        ok = True
+    return jsonify({"enabled": autostart.is_autostart_enabled(), "success": ok})
+
+
+def _terminate_pid(pid):
+    """Shared termination logic used by both /processes/kill and
+    /processes/kill_all. Tries a graceful terminate() first, escalates to
+    kill() if the process is still alive after a few seconds.
+    Returns (success: bool, message: str, name: str|None)."""
+    try:
+        proc = psutil.Process(pid)
+        name = proc.name()
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except psutil.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=3)
+        return True, f"Terminated {name} (pid {pid})", name
+    except psutil.NoSuchProcess:
+        return True, "Process was already gone", None
+    except psutil.AccessDenied:
+        return False, "Permission denied - needs admin/sudo privileges to terminate", None
+    except Exception as e:
+        return False, str(e), None
+
+
+@app.route("/processes/kill", methods=["POST"])
+def kill_process():
+    """Terminate a single flagged remote-access-tool process by pid,
+    triggered from the dashboard's "Kill process" button."""
+    payload = request.get_json(force=True, silent=True) or {}
+    pid = payload.get("pid")
+    if not isinstance(pid, int):
+        return jsonify({"success": False, "message": "missing or invalid 'pid'"}), 400
+
+    success, message, name = _terminate_pid(pid)
+    if success and name:
+        record_event(
+            "remote_access_tool_detected", "desktop_agent",
+            f"Killed {name} (pid {pid}) from dashboard", "medium", pid=pid,
+        )
+    return jsonify({"success": success, "message": message}), (200 if success else 403)
+
+
+@app.route("/processes/kill_all", methods=["POST"])
+def kill_all_processes():
+    """Live-scans for every currently running flagged remote-access tool
+    (not just ones already in the event log, in case one just appeared) and
+    terminates all of them in one go - triggered from the dashboard's
+    "Kill All Detected" button."""
+    found = _scan_processes()
+    killed = []
+    failed = []
+    for info in found.values():
+        pid = info["pid"]
+        success, message, name = _terminate_pid(pid)
+        if success and name:
+            killed.append(f"{name} (pid {pid})")
+        elif not success:
+            failed.append(f"pid {pid}: {message}")
+
+    if killed:
+        record_event(
+            "remote_access_tool_detected", "desktop_agent",
+            f"Killed all flagged tools from dashboard: {', '.join(killed)}", "medium",
+        )
+
+    return jsonify({
+        "success": True,
+        "killed": killed,
+        "failed": failed,
+        "message": (
+            f"Killed {len(killed)} process(es)." if killed else "No flagged tools were currently running."
+        ) + (f" {len(failed)} failed." if failed else ""),
+    })
+
+
 @app.route("/dashboard", methods=["GET"])
 def dashboard():
     return send_from_directory(resource_path("."), "dashboard.html")
 
 
 # ---------------------------------------------------------------------------
-# Remote-access-tool monitor (same detection logic as desktop-agent/monitor.py)
+# Remote-access-tool monitor
 # ---------------------------------------------------------------------------
 POLL_INTERVAL_SECONDS = 5
 ESCALATE_AFTER_SECONDS = 20
@@ -230,7 +335,7 @@ def monitor_loop():
                     record_event(
                         "remote_access_tool_detected", "desktop_agent",
                         f"{info['tool']} (pid {info['pid']}, process '{info['process_name']}')",
-                        "medium",
+                        "medium", pid=info["pid"],
                     )
                 else:
                     track = _tracked[key]
@@ -240,7 +345,7 @@ def monitor_loop():
                         record_event(
                             "remote_access_tool_new_connection", "desktop_agent",
                             f"{info['tool']} still active after {int(running_for)}s (pid {info['pid']})",
-                            "high",
+                            "high", pid=info["pid"],
                         )
 
             for key in list(_tracked.keys()):
@@ -252,60 +357,57 @@ def monitor_loop():
 
 
 # ---------------------------------------------------------------------------
-# System tray icon
+# Native app window
 # ---------------------------------------------------------------------------
 def run_flask():
     app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False)
 
 
 def _headless_fallback(reason):
-    # Covers any environment where a tray icon can't be created - missing
-    # library, no display/desktop session, unsupported backend, etc. The
-    # server and monitor threads are already running, so the app still
-    # works; the user just reaches it via the browser instead of the tray.
-    print(f"Tray icon unavailable ({reason}); running headless.")
-    print("Dashboard: http://localhost:5000/dashboard")
+    # Covers any environment where a native window can't be created - missing
+    # webview backend, no display/desktop session, etc. The server and
+    # monitor threads are already running, so the app still works; the user
+    # just reaches it via a regular browser tab instead of an app window.
+    print(f"App window unavailable ({reason}); running headless.", flush=True)
+    print("Dashboard: http://localhost:5000/dashboard", flush=True)
+    webbrowser.open("http://localhost:5000/dashboard")
     while True:
         time.sleep(3600)
 
 
-def run_tray():
+def run_window():
+    """Opens the dashboard in a real OS window (WebView2 on Windows,
+    WKWebView on macOS) via pywebview, on the main thread - required on
+    macOS, and the simplest cross-platform-safe choice overall. Closing the
+    window ends this call, which ends the process (the Flask/monitor
+    threads are daemons)."""
     try:
-        import pystray
-        from PIL import Image
+        import webview
     except Exception as e:
-        # pystray raises whatever error its chosen backend raises at import
-        # time (ImportError, ValueError for a missing Gtk/AppIndicator
-        # namespace on Linux, etc.) - treat any of them as "no tray here".
         _headless_fallback(str(e))
         return
 
-    def open_dashboard(icon=None, item=None):
-        webbrowser.open("http://localhost:5000/dashboard")
-
-    def quit_app(icon=None, item=None):
-        icon.stop()
-        os._exit(0)
-
     try:
-        image = Image.open(resource_path(os.path.join("assets", "icon.png")))
-        menu = pystray.Menu(
-            pystray.MenuItem("Open Dashboard", open_dashboard, default=True),
-            pystray.MenuItem("Quit Seraph Clone", quit_app),
+        webview.create_window(
+            "NR Secure",
+            "http://localhost:5000/dashboard",
+            width=1040,
+            height=720,
+            min_size=(720, 480),
         )
-        icon = pystray.Icon("SeraphClone", image, "Seraph Clone - protection active", menu)
-        icon.run()
+        webview.start()
     except Exception as e:
-        # e.g. no Gtk/AppIndicator on this Linux session, no display, etc.
-        # Real Windows/macOS builds use pystray's native win32/Cocoa backends
-        # and won't hit this, but we never want a tray failure to take down
-        # the server + monitor that are already running.
+        # e.g. no WebView2 runtime on an old Windows install, no WebKit
+        # available, no display on a headless Linux session, etc.
         _headless_fallback(str(e))
 
 
 if __name__ == "__main__":
+    # Best-effort: register to launch at login automatically. Only actually
+    # does anything when running as a frozen/installed app (no-op in dev).
+    autostart.enable_autostart()
+
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=monitor_loop, daemon=True).start()
     time.sleep(1.2)
-    webbrowser.open("http://localhost:5000/dashboard")
-    run_tray()
+    run_window()

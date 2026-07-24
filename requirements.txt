@@ -1,6 +1,8 @@
 flask
 psutil
 requests
-pystray
-pillow
+pywebview
+pyobjc-framework-Cocoa; sys_platform == "darwin"
+pyobjc-framework-WebKit; sys_platform == "darwin"
+pythonnet; sys_platform == "win32"
 pyinstaller

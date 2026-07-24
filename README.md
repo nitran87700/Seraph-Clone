@@ -1,82 +1,89 @@
-# Seraph Clone — Scam Protection MVP
+# NR Secure
 
-A working prototype inspired by [Seraph Secure](https://www.seraphsecure.com), covering its three core ideas:
+A lightweight scam-protection app for Windows and macOS: it watches for remote-access
+tools scammers commonly abuse (AnyDesk, TeamViewer, and similar), scores an overall
+risk level, lets you kill flagged processes with one click, and alerts a trusted
+"Guardian" contact (email or Slack/Discord webhook) once risk crosses a threshold.
+The dashboard opens as a native app window (not a browser tab), and the app starts
+automatically at login once installed.
 
-1. **Scam site blocking** — a browser extension checks every page you visit against a known-scam list plus lightweight heuristics (suspicious keywords, brand typosquatting), and blocks matches.
-2. **Remote-access tool detection** — a desktop agent watches for processes like AnyDesk, TeamViewer, and other tools scammers commonly abuse to take control of a victim's computer.
-3. **Guardian alerts** — a trusted contact (email or Slack/Discord webhook) gets notified automatically once your risk score crosses a threshold.
+This is a functional prototype, not a hardened production security product — the
+detection rules are a small sample set meant to prove the architecture, not
+exhaustive real-world coverage.
 
-Everything reports into one **central risk engine** (`server/`) that scores recent activity and decides when to alert your Guardian. A live dashboard shows the event feed and current risk score.
-
-This is a functional demo, not a production security product — the blocklist and detection rules are small samples meant to prove the architecture, not real-world coverage.
-
-**Want a Windows `.exe` / macOS `.dmg` instead of running Python scripts?** See
-[`desktop-app/PACKAGING.md`](desktop-app/PACKAGING.md) — push this repo to
-GitHub and a workflow builds both automatically on Microsoft's/Apple's own
-cloud machines (no Windows or Mac of your own needed).
-
-## Architecture
+## What's in this repo
 
 ```
-extension/         Chrome extension (Manifest V3) — blocks scam sites in the browser
-desktop-agent/      Standalone Python script version of the remote-access monitor (for dev/manual runs)
-server/             Standalone Flask app version of the risk server (for dev/manual runs)
-desktop-app/        Packaged version — server + monitor + tray icon combined into one app,
-                    built into a Windows .exe and macOS .dmg via GitHub Actions (see desktop-app/PACKAGING.md)
-simulate_scam.py    Fires a fake attack sequence at the server so you can see it work without installing anything
+main.py                 Flask risk/event server + remote-access monitor + native app window (pywebview)
+guardian.py             Guardian alerting (email / Slack / Discord webhook)
+autostart.py            Registers the app to launch at login (macOS LaunchAgent / Windows Registry Run key)
+dashboard.html           Live dashboard UI (risk score, event log, Kill / Kill All, Guardian + App settings)
+nrsecure.spec            PyInstaller build spec (produces the Windows .exe / macOS .app)
+assets/                  App icons (.ico for Windows, iconset for macOS)
+requirements.txt         Python dependencies
+.github/workflows/build.yml   CI that builds the real .exe and .dmg on GitHub's own Windows/Mac runners
+PACKAGING.md             How to get the built .exe/.dmg (push → GitHub Actions builds them for free)
 ```
 
-**Two ways to run the server + monitor side:** the plain `server/` + `desktop-agent/`
-scripts (run with `python3`, good for local dev/testing — used below), or the
-packaged `desktop-app/` (same logic, combined into one binary with a tray icon —
-see `desktop-app/PACKAGING.md` for how to get a real `.exe`/`.dmg` built via CI).
+All of it runs as a single combined process — no separate server/agent to start
+manually.
 
-Data flow: extension/agent → POST `/events` → risk score updated → if score ≥ 60, Guardian alert fires (email and/or webhook) → dashboard shows it all live.
+## Getting the built app
 
-## Running it
+See [`PACKAGING.md`](PACKAGING.md) — push this repo to GitHub and Actions builds
+a Windows `.exe` and macOS `.dmg` automatically, no Windows or Mac machine of your
+own required.
 
-**1. Start the server (required first — everything else reports to it):**
+## Running from source (for development)
+
 ```bash
-cd server
 pip install -r requirements.txt --break-system-packages
-python3 app.py
+python3 main.py
 ```
-Open **http://localhost:5000/dashboard** — set your Guardian's email/webhook there.
+Opens the dashboard in a native app window (falls back to opening it in your
+default browser if no native webview backend is available in your environment,
+e.g. a minimal Linux setup without GTK/Qt installed).
 
-**2. Try it instantly with the simulator (no browser or install needed):**
-```bash
-python3 simulate_scam.py
-```
-Watch the dashboard risk score climb and a Guardian alert fire.
+## How it works
 
-**3. Load the real browser extension:**
-- Chrome → `chrome://extensions` → enable Developer Mode → "Load unpacked" → select the `extension/` folder.
-- Visit any URL containing one of the demo scam domains in `extension/blocklist.json` (e.g. `http://irs-refund-verify.org`) to see it get blocked and reported.
+- **Remote-access monitor**: polls running processes every 5 seconds for known
+  remote-access tool names. A first detection is medium severity; if the tool is
+  still running 20+ seconds later it escalates to high severity (an active
+  session, not just a quick launch).
+- **Risk engine**: each event adds weighted risk that decays over a 30-minute
+  window. At 60+/100, a Guardian alert fires (with a 5-minute cooldown so a burst
+  of events doesn't spam them).
+- **Kill / Kill All**: the dashboard's event log has a "Kill process" button per
+  detected tool, plus a "Kill All Detected" button that live-scans and terminates
+  every currently running flagged tool in one go.
+- **Guardian alerts**: configure an email (via SMTP) and/or a webhook URL on the
+  dashboard. If neither is configured, alerts still get logged locally
+  (`~/.nrsecure/guardian_alerts.log`) so the flow is visible even without setup.
+- **Auto-start**: on first launch of the installed app, it registers itself to
+  start at login (macOS LaunchAgent / Windows Registry Run key) — no manual setup
+  needed after installing. Toggle it off anytime from the dashboard's "App
+  settings" card.
+- **Native app window**: the dashboard renders in a real OS window via
+  `pywebview` (WebView2 on Windows, WKWebView on macOS) instead of a browser
+  tab. Closing the window quits the app — there's no separate tray/menu-bar
+  icon, since a tray icon and a native window can't reliably share the main
+  thread on macOS.
 
-**4. Run the real desktop agent:**
-```bash
-cd desktop-agent
-pip install -r requirements.txt --break-system-packages
-python3 monitor.py
-```
-It polls running processes every 5 seconds for known remote-access tools. If you have TeamViewer/AnyDesk installed, opening them will trigger a detection; if one stays open past 20 seconds it escalates to "active session" severity.
+Runtime data (event log, Guardian settings) lives in `~/.nrsecure/`.
 
-## Guardian alerts
+## What's simplified vs. a hardened product
 
-Configure on the dashboard (or via `POST /guardian/config`):
-- `guardian_email` + SMTP settings → sends real email
-- `guardian_webhook_url` → posts to a Slack/Discord incoming webhook
-- If neither is configured, alerts are still recorded to `server/guardian_alerts.log` so the flow is visible in the demo.
-
-There's a 5-minute cooldown between alerts so a burst of events doesn't spam the Guardian.
-
-## What's simplified vs. a real product
-
-- Blocklist and heuristics are tiny samples — a real version would sync a hosted, continuously updated feed (Seraph's is 250k+ domains, refreshed daily).
-- Typosquat detection is a basic edit-distance check on the domain label, not the more sophisticated matching a production system would use.
-- No authentication/accounts — this is single-user, local-only.
-- Desktop agent flags known remote-access *tool names*, not behavior — a real system would also look at session initiation patterns, not just whether the process is running.
+- Remote-access detection matches on process *names*, not behavior — a real
+  system would also analyze session/connection patterns, not just whether a
+  process is running (so legitimate IT use of the same tools will also get
+  flagged).
+- No authentication/accounts — single-user, local-only.
+- Unsigned builds — Windows SmartScreen and macOS Gatekeeper show a one-time
+  warning until you add paid code-signing certificates (see `PACKAGING.md`).
 
 ## Extending it
 
-Natural next steps: add real-time blocklist sync from a hosted feed, add account/multi-device support, add a mobile companion app for Guardian notifications, replace the simple keyword/typosquat heuristics with an actual phishing-classification model, and add evidence-gathering/reporting workflows like Seraph's victim-support features.
+Natural next steps: paid code-signing/notarization to remove the OS warnings,
+account/multi-device support, a mobile companion app for Guardian notifications,
+and richer remote-access heuristics (session pattern analysis instead of just
+process names).

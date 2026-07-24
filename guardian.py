@@ -93,10 +93,10 @@ def send_guardian_alert(reason: str, score: float) -> bool:
         _log_alert(f"SKIPPED (cooldown active) - {reason}")
         return False
 
-    subject = "Seraph Clone - Potential scam activity detected"
+    subject = "NR Secure - Potential scam activity detected"
     body = (
         f"Hi {cfg['guardian_name'] or 'there'},\n\n"
-        f"Seraph Clone detected suspicious activity on a device you are watching as a Guardian.\n\n"
+        f"NR Secure detected suspicious activity on a device you are watching as a Guardian.\n\n"
         f"Risk score: {score}/100\n"
         f"Reason: {reason}\n\n"
         f"Consider checking in with them directly.\n"

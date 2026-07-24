@@ -1,17 +1,27 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# PyInstaller spec for Seraph Clone's unified desktop app.
+# PyInstaller spec for NR Secure's unified desktop app.
 # Run on the target OS (this same spec works for both, since sys.platform
 # is evaluated at build time by whichever machine runs pyinstaller):
 #
-#   pyinstaller --noconfirm seraph.spec
+#   pyinstaller --noconfirm nrsecure.spec
 #
-# Windows  -> dist/SeraphClone.exe        (single-file, windowed, tray icon)
-# macOS    -> dist/SeraphClone.app        (bundle; CI wraps this in a .dmg)
+# Windows  -> dist/NRSecure.exe        (single-file, windowed, native app window)
+# macOS    -> dist/NRSecure.app        (bundle; CI wraps this in a .dmg)
 
 import sys
 
 block_cipher = None
+
+# pywebview picks its backend dynamically at import time based on the OS,
+# which PyInstaller's static analysis can miss - list the relevant one
+# explicitly for whichever platform this spec is being run on.
+if sys.platform == 'darwin':
+    webview_hidden_imports = ['webview.platforms.cocoa']
+elif sys.platform == 'win32':
+    webview_hidden_imports = ['webview.platforms.edgechromium', 'webview.platforms.winforms', 'clr']
+else:
+    webview_hidden_imports = ['webview.platforms.gtk']
 
 a = Analysis(
     ['main.py'],
@@ -19,9 +29,8 @@ a = Analysis(
     binaries=[],
     datas=[
         ('dashboard.html', '.'),
-        ('assets/icon.png', 'assets'),
     ],
-    hiddenimports=['pystray._base', 'PIL._tkinter_finder'],
+    hiddenimports=webview_hidden_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -42,7 +51,7 @@ if sys.platform == 'darwin':
         a.zipfiles,
         a.datas,
         [],
-        name='SeraphClone',
+        name='NRSecure',
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
@@ -57,15 +66,17 @@ if sys.platform == 'darwin':
     )
     app = BUNDLE(
         exe,
-        name='SeraphClone.app',
+        name='NRSecure.app',
         icon='assets/icon.icns',
-        bundle_identifier='com.seraphclone.app',
+        bundle_identifier='com.nrsecure.app',
         info_plist={
-            'CFBundleName': 'Seraph Clone',
-            'CFBundleDisplayName': 'Seraph Clone',
+            'CFBundleName': 'NR Secure',
+            'CFBundleDisplayName': 'NR Secure',
             'CFBundleShortVersionString': '0.1.0',
-            'LSUIElement': True,  # tray-only app, no Dock icon needed
-            'NSHumanReadableCopyright': 'Demo project - not affiliated with Seraph Secure',
+            # No LSUIElement here (unlike the old tray-only build) - this is
+            # now a normal windowed app, so it should show a Dock icon and
+            # work with Cmd+Tab like any other application.
+            'NSHumanReadableCopyright': 'NR Secure',
         },
     )
 else:
@@ -77,7 +88,7 @@ else:
         a.zipfiles,
         a.datas,
         [],
-        name='SeraphClone',
+        name='NRSecure',
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
