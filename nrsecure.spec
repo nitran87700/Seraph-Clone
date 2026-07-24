@@ -13,15 +13,18 @@ import sys
 
 block_cipher = None
 
-# pywebview picks its backend dynamically at import time based on the OS,
-# which PyInstaller's static analysis can miss - list the relevant one
-# explicitly for whichever platform this spec is being run on.
+# pywebview and plyer both pick their backend dynamically at import time
+# based on the OS, which PyInstaller's static analysis can miss - list the
+# relevant ones explicitly for whichever platform this spec is being run on.
 if sys.platform == 'darwin':
-    webview_hidden_imports = ['webview.platforms.cocoa']
+    hidden_imports = ['webview.platforms.cocoa', 'plyer.platforms.macosx.notification']
 elif sys.platform == 'win32':
-    webview_hidden_imports = ['webview.platforms.edgechromium', 'webview.platforms.winforms', 'clr']
+    hidden_imports = [
+        'webview.platforms.edgechromium', 'webview.platforms.winforms', 'clr',
+        'plyer.platforms.win.notification',
+    ]
 else:
-    webview_hidden_imports = ['webview.platforms.gtk']
+    hidden_imports = ['webview.platforms.gtk', 'plyer.platforms.linux.notification']
 
 a = Analysis(
     ['main.py'],
@@ -30,7 +33,7 @@ a = Analysis(
     datas=[
         ('dashboard.html', '.'),
     ],
-    hiddenimports=webview_hidden_imports,
+    hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

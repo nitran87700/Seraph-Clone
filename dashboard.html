@@ -40,16 +40,18 @@
   .badge {
     display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
   }
-  .badge.scam_site_blocked, .badge.phishing_heuristic_match { background: rgba(255,184,79,.15); color: var(--warn); }
-  .badge.remote_access_tool_detected, .badge.remote_access_tool_new_connection { background: rgba(255,92,92,.15); color: var(--danger); }
+  .badge.medium { background: rgba(255,184,79,.15); color: var(--warn); }
+  .badge.high { background: rgba(255,92,92,.15); color: var(--danger); }
   input, button {
     background: #0e141b; border: 1px solid var(--border); color: var(--text);
     padding: 8px 10px; border-radius: 6px; font-size: 13px; width: 100%; margin-bottom: 8px;
   }
   button { background: var(--accent); border: none; cursor: pointer; font-weight: 600; color: #fff; }
   button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  button.danger-outline { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .empty { color: var(--muted); font-size: 13px; padding: 20px 0; text-align: center; }
+  .empty { color: var(--muted); font-size: 13px; padding: 30px 0; text-align: center; }
+  .empty.secure { color: var(--ok); }
   button.kill {
     width: auto; padding: 5px 10px; font-size: 11px; background: var(--danger); margin: 0;
   }
@@ -57,8 +59,8 @@
   button.kill-all {
     background: var(--danger); margin-bottom: 12px;
   }
-  .event-log-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-  .event-log-header .label { margin-bottom: 0; }
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .section-header .label { margin-bottom: 0; }
   .toggle-row { display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
   .toggle-row input[type="checkbox"] { width: auto; margin: 0; }
   .toggle-note { color: var(--muted); font-size: 11px; margin-top: 6px; }
@@ -66,7 +68,7 @@
 </head>
 <body>
   <h1>NR Secure</h1>
-  <div class="sub">Live scam-protection dashboard — auto-refreshes every 5s</div>
+  <div class="sub">Live scam-protection dashboard — auto-refreshes every 3s</div>
 
   <div class="grid">
     <div>
@@ -94,21 +96,22 @@
           <input type="checkbox" id="autostartToggle" onchange="toggleAutostart(this)">
         </div>
         <div id="autostartNote" class="toggle-note"></div>
+        <button class="danger-outline" style="margin-top:12px;" onclick="quitApp()">Quit NR Secure</button>
       </div>
     </div>
 
     <div class="card">
-      <div class="event-log-header">
-        <div class="label">Event log</div>
+      <div class="section-header">
+        <div class="label">Active connections</div>
         <button class="kill-all" style="width:auto;" onclick="killAll(this)">Kill All Detected</button>
       </div>
       <table>
         <thead>
-          <tr><th>Time</th><th>Type</th><th>Source</th><th>Detail</th><th></th></tr>
+          <tr><th>Tool</th><th>Process</th><th>PID</th><th>Duration</th><th>Severity</th><th></th></tr>
         </thead>
-        <tbody id="eventBody"></tbody>
+        <tbody id="connectionsBody"></tbody>
       </table>
-      <div id="emptyState" class="empty" style="display:none;">No events yet. Trigger the browser extension, or wait for the built-in remote-access monitor to see activity here.</div>
+      <div id="emptyState" class="empty secure" style="display:none;">No active threats detected — system secure.</div>
     </div>
   </div>
 
@@ -121,28 +124,35 @@ function ringColor(score) {
   return "var(--ok)";
 }
 
+function formatDuration(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s}s`;
+}
+
 async function refresh() {
   try {
-    const res = await fetch(`${API}/events`);
+    const res = await fetch(`${API}/status`);
     const data = await res.json();
     const ring = document.getElementById("ring");
     ring.textContent = data.risk_score;
     ring.style.borderColor = ringColor(data.risk_score);
     ring.style.color = ringColor(data.risk_score);
-    document.getElementById("riskText").textContent =
-      data.risk_score >= 60 ? "High risk — guardian alerts active" :
-      data.risk_score >= 30 ? "Elevated — monitoring closely" : "Normal";
+    document.getElementById("riskText").textContent = data.secure
+      ? "Secure — no active threats"
+      : data.risk_score >= 60 ? "High risk — active connection(s) detected" : "Elevated — monitoring closely";
 
-    const body = document.getElementById("eventBody");
+    const body = document.getElementById("connectionsBody");
     body.innerHTML = "";
-    document.getElementById("emptyState").style.display = data.events.length ? "none" : "block";
-    for (const e of data.events) {
+    const empty = document.getElementById("emptyState");
+    empty.style.display = data.active_connections.length ? "none" : "block";
+
+    for (const c of data.active_connections) {
       const tr = document.createElement("tr");
-      const canKill = e.pid && (e.type === "remote_access_tool_detected" || e.type === "remote_access_tool_new_connection");
-      const actionCell = canKill
-        ? `<button class="kill" onclick="killProcess(${e.pid}, this)">Kill process</button>`
-        : "";
-      tr.innerHTML = `<td>${e.time_str}</td><td><span class="badge ${e.type}">${e.type.replaceAll('_',' ')}</span></td><td>${e.source}</td><td>${e.detail || ''}</td><td>${actionCell}</td>`;
+      tr.innerHTML = `<td>${c.tool}</td><td>${c.process_name}</td><td>${c.pid}</td><td>${formatDuration(c.duration_seconds)}</td>` +
+        `<td><span class="badge ${c.severity}">${c.severity}</span></td>` +
+        `<td><button class="kill" onclick="killProcess(${c.pid}, this)">Kill</button></td>`;
       body.appendChild(tr);
     }
   } catch (err) {
@@ -245,10 +255,19 @@ async function toggleAutostart(checkbox) {
   loadAutostart();
 }
 
+async function quitApp() {
+  if (!confirm("Quit NR Secure? Monitoring will stop until you reopen the app.")) return;
+  try {
+    await fetch(`${API}/app/quit`, { method: "POST" });
+  } catch (err) {
+    // expected - the server process exits right after responding
+  }
+}
+
 loadGuardianConfig();
 loadAutostart();
 refresh();
-setInterval(refresh, 5000);
+setInterval(refresh, 3000);
 </script>
 </body>
 </html>

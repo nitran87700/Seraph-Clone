@@ -43,11 +43,16 @@ On first launch, the app:
   open it themselves after installing;
 - opens the dashboard in a real app window (not a browser tab) — it uses the
   OS's built-in web renderer (WebView2 on Windows, WKWebView on macOS), so no
-  extra runtime to install. Closing the window quits the app. There's no
-  system tray/menu-bar icon — a tray icon and a native window can't reliably
-  share the main thread on macOS, so this build keeps things simple with just
-  the one window. The "Start at Login" toggle lives in the dashboard itself,
-  under "App settings".
+  extra runtime to install. There's no system tray/menu-bar icon — a tray icon
+  and a native window can't reliably share the main thread on macOS, so this
+  build keeps things simple with just the one window. The "Start at Login"
+  toggle lives in the dashboard itself, under "App settings".
+
+**Closing the window doesn't quit the app** — it keeps running in the
+background (server + monitor keep going, and you'll get a notification if a
+new remote-access connection shows up). Opening the app again (double-click it
+a second time) detects it's already running and just brings the window back.
+Use "Quit NR Secure" in the dashboard's App settings to fully exit.
 
 Runtime data (event log, Guardian contact settings) is stored per-user in
 `~/.nrsecure/`.

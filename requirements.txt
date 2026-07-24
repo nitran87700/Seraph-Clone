@@ -2,6 +2,7 @@ flask
 psutil
 requests
 pywebview
+plyer
 pyobjc-framework-Cocoa; sys_platform == "darwin"
 pyobjc-framework-WebKit; sys_platform == "darwin"
 pythonnet; sys_platform == "win32"
