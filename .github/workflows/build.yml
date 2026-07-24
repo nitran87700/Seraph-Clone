@@ -57,10 +57,21 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm seraph.spec
 
+      - name: Ad-hoc re-sign the app bundle
+        # PyInstaller applies its own ad-hoc signature, but copying the .app
+        # with plain `cp` can strip/invalidate it, and Apple Silicon Macs
+        # refuse to run any arm64 binary with a missing/broken signature
+        # (the process gets killed instantly, no error dialog). Re-signing
+        # here, right before packaging, guarantees a valid signature ships.
+        run: |
+          codesign --force --deep --sign - dist/SeraphClone.app
+          codesign --verify --deep --strict --verbose=2 dist/SeraphClone.app
+
       - name: Package as .dmg (hdiutil is built into macOS)
         run: |
           mkdir dmg-staging
-          cp -R dist/SeraphClone.app dmg-staging/
+          ditto dist/SeraphClone.app dmg-staging/SeraphClone.app
+          codesign --verify --deep --strict --verbose=2 dmg-staging/SeraphClone.app
           ln -s /Applications dmg-staging/Applications
           hdiutil create -volname "Seraph Clone" \
             -srcfolder dmg-staging \
