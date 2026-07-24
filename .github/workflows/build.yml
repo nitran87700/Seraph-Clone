@@ -1,0 +1,92 @@
+name: Build Seraph Clone desktop app
+
+# Builds real native binaries on GitHub-hosted Windows and macOS runners.
+#
+# Triggers:
+#   - Push to main
+#   - Manual run from the Actions tab ("Run workflow")
+#   - Pushing a version tag like "v0.1.0" also uploads the artifacts to a
+#     GitHub Release so they're easy to find and download.
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm seraph.spec
+
+      - name: Rename output
+        run: |
+          copy dist\SeraphClone.exe dist\SeraphClone-Windows.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SeraphClone-Windows
+          path: dist/SeraphClone-Windows.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build .icns from iconset (iconutil is built into macOS)
+        run: iconutil -c icns assets/Icon.iconset -o assets/icon.icns
+
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm seraph.spec
+
+      - name: Package as .dmg (hdiutil is built into macOS)
+        run: |
+          mkdir dmg-staging
+          cp -R dist/SeraphClone.app dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+          hdiutil create -volname "Seraph Clone" \
+            -srcfolder dmg-staging \
+            -ov -format UDZO \
+            dist/SeraphClone-macOS.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SeraphClone-macOS
+          path: dist/SeraphClone-macOS.dmg
+
+  release:
+    # Only runs when a version tag (e.g. v0.1.0) is pushed - attaches both
+    # binaries to a GitHub Release so they're downloadable without digging
+    # through the Actions tab.
+    needs: [build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/SeraphClone-Windows/SeraphClone-Windows.exe
+            artifacts/SeraphClone-macOS/SeraphClone-macOS.dmg
