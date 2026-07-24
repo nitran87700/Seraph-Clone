@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Seraph Clone - Live Dashboard</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --card: #131a22;
+    --border: #223041;
+    --text: #e7edf3;
+    --muted: #8ea0b3;
+    --accent: #4f9dff;
+    --danger: #ff5c5c;
+    --warn: #ffb84f;
+    --ok: #4fd18b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin-bottom: 24px; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 280px 1fr; gap: 20px; align-items: start; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px;
+  }
+  .score-ring {
+    width: 160px; height: 160px; margin: 0 auto 12px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 36px; font-weight: 700;
+    border: 10px solid var(--border);
+  }
+  .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+  }
+  .badge.scam_site_blocked, .badge.phishing_heuristic_match { background: rgba(255,184,79,.15); color: var(--warn); }
+  .badge.remote_access_tool_detected, .badge.remote_access_tool_new_connection { background: rgba(255,92,92,.15); color: var(--danger); }
+  input, button {
+    background: #0e141b; border: 1px solid var(--border); color: var(--text);
+    padding: 8px 10px; border-radius: 6px; font-size: 13px; width: 100%; margin-bottom: 8px;
+  }
+  button { background: var(--accent); border: none; cursor: pointer; font-weight: 600; color: #fff; }
+  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 20px 0; text-align: center; }
+</style>
+</head>
+<body>
+  <h1>Seraph Clone</h1>
+  <div class="sub">Live scam-protection dashboard — auto-refreshes every 5s</div>
+
+  <div class="grid">
+    <div>
+      <div class="card" style="margin-bottom:16px;">
+        <div class="label">Current risk score</div>
+        <div id="ring" class="score-ring">--</div>
+        <div id="riskText" style="text-align:center; color: var(--muted); font-size: 12px;"></div>
+      </div>
+
+      <div class="card">
+        <div class="label">Guardian contact</div>
+        <input id="guardianName" placeholder="Guardian name">
+        <input id="guardianEmail" placeholder="Guardian email">
+        <input id="webhookUrl" placeholder="Webhook URL (Slack/Discord, optional)">
+        <div class="row2">
+          <button onclick="saveGuardian()">Save</button>
+          <button class="secondary" onclick="testGuardian()">Send test alert</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="label">Event log</div>
+      <table>
+        <thead>
+          <tr><th>Time</th><th>Type</th><th>Source</th><th>Detail</th></tr>
+        </thead>
+        <tbody id="eventBody"></tbody>
+      </table>
+      <div id="emptyState" class="empty" style="display:none;">No events yet. Trigger the browser extension, or wait for the built-in remote-access monitor to see activity here.</div>
+    </div>
+  </div>
+
+<script>
+const API = "http://localhost:5000";
+
+function ringColor(score) {
+  if (score >= 60) return "var(--danger)";
+  if (score >= 30) return "var(--warn)";
+  return "var(--ok)";
+}
+
+async function refresh() {
+  try {
+    const res = await fetch(`${API}/events`);
+    const data = await res.json();
+    const ring = document.getElementById("ring");
+    ring.textContent = data.risk_score;
+    ring.style.borderColor = ringColor(data.risk_score);
+    ring.style.color = ringColor(data.risk_score);
+    document.getElementById("riskText").textContent =
+      data.risk_score >= 60 ? "High risk — guardian alerts active" :
+      data.risk_score >= 30 ? "Elevated — monitoring closely" : "Normal";
+
+    const body = document.getElementById("eventBody");
+    body.innerHTML = "";
+    document.getElementById("emptyState").style.display = data.events.length ? "none" : "block";
+    for (const e of data.events) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${e.time_str}</td><td><span class="badge ${e.type}">${e.type.replaceAll('_',' ')}</span></td><td>${e.source}</td><td>${e.detail || ''}</td>`;
+      body.appendChild(tr);
+    }
+  } catch (err) {
+    console.error("Failed to reach server", err);
+  }
+}
+
+async function loadGuardianConfig() {
+  const res = await fetch(`${API}/guardian/config`);
+  const cfg = await res.json();
+  document.getElementById("guardianName").value = cfg.guardian_name || "";
+  document.getElementById("guardianEmail").value = cfg.guardian_email || "";
+  document.getElementById("webhookUrl").value = cfg.guardian_webhook_url || "";
+}
+
+async function saveGuardian() {
+  await fetch(`${API}/guardian/config`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      guardian_name: document.getElementById("guardianName").value,
+      guardian_email: document.getElementById("guardianEmail").value,
+      guardian_webhook_url: document.getElementById("webhookUrl").value,
+    })
+  });
+  alert("Guardian settings saved.");
+}
+
+async function testGuardian() {
+  const res = await fetch(`${API}/guardian/test`, { method: "POST" });
+  const data = await res.json();
+  alert(data.sent ? "Test alert sent (check guardian_alerts.log if no email/webhook configured)." : "Failed to send.");
+}
+
+loadGuardianConfig();
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
